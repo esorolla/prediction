@@ -1,0 +1,164 @@
+---
+title: "Prediction of exercise appropriateness"
+author: "Edén Sorolla"
+date: "12/8/2020"
+output: 
+  html_document:
+    toc: true
+    number_sections: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, tidy.opts=list(width.cutoff=75), tidy=TRUE)
+```
+
+# Introduction
+
+In this project we have used data recorded from accelerometers on the belt, forearm, arm, and dumbell of 6 participants while making barbell lifts correctly and incorrectly in 5 different ways, labeled with letters from A to E. The goal is to use the data for building a model capable to predict the way barbell lifting is done by other people in the future so as to assess whether they do it correctly or incorrectly. More information is available from [this website](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise Dataset).
+
+# Loading and Preprocessing
+
+We load the required libraries to apply the necessary preprocessing transformations to impute values to the dataframe and to apply the training methods to the data.
+
+```{r libraries, warning = FALSE, message = FALSE}
+library(caret)
+library(randomForest)
+library(rpart)
+```
+
+## Loading Data
+
+In this section we load the data.
+
+```{r download, cache = TRUE}
+training <- read.csv(header = TRUE, sep = ",", file="https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv")
+testing <- read.csv(header = TRUE, sep = ",", file = "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv")
+```
+
+## Preprocessing
+
+Before applying any machine learning model or apply any cross-validation, we need to inspect the data and to check the missing and ambiguous values.
+
+### Cleaning data
+
+By inspecting the dataset we have seen that the number of variables is 160, but the first 7 variables store useless data for the purpose of predicting the way the exercise is done. Therefore, we remove the first 7 variables from the data. On the other hand, the variable accounting for the way that the exercise is done is stored in the variable "classe".
+
+```{r cleaning1}
+training <- training[, -c(1:7)]
+testing <- testing[, -c(1:7)]
+```
+
+### Imputing missing values
+
+We have seen that many variables hold an important number of missing values. We have identified three types of missing values: "NA", "#DIV/0!" and blank spaces. Therefore, we are going to impute consecutively the missing values of the different types with "NA". Later, we will inspect the percentage of missing values to see whether we can apply some algorithm to interpolate or we just discard the variables holding too many missing values.
+
+First of all we are going to create a set of vectors storing the ratio of missing values within each column. Consecutively we will impute "NA" to missing values of the type: blank spaces and "#DIV/0!".
+
+```{r}
+## NA ratio before any cleaning data
+vec1 <- NULL
+for (j in 1: length(training)){vec1[j] <- sum(is.na(training[,j]))/length(training[,1])}
+
+## We impute the blank spaces with NA
+is.na(training) <- training == ""
+
+## NA ratio after imputing the blank values
+vec2 <- NULL
+for (j in 1: length(training)){vec2[j] <- sum(is.na(training[,j]))/length(training[,1])}
+
+## We impute the "#DIV/0!" with NA
+is.na(training) <- training == "#DIV/0!"
+
+## NA ratio after imputing the "#DIV/0!" with NA
+vec3 <- NULL
+for (j in 1: length(training)){vec3[j] <- sum(is.na(training[,j]))/length(training[,1])}
+```
+Next, we evaluate the percentage of missing values across all the variables, i.e. within the whole data.
+
+```{r}
+summ <- 100*c(sum(vec1)/length(vec1), sum(vec2)/length(vec2), sum(vec3)/length(vec3))
+
+barplot(summ, las = 1, names.arg = c("Original Data", "No blank", "No DIV/0"), ylim=c(0,100),
+        main = "Identification of missing values in the Dataset",
+        ylab = "% of missing values", col = "red")
+abline(h = 100*sum(vec3)/length(vec3), col = "blue", lwd = 2, lty = 2)
+```
+
+It is interesting to note that most of missing values occur in the original dataset in the form of "NA" and the second most numerous group is the blank spaces. The "division-by-zero" missing values are rather marginal.
+
+Thus, we keep the variables with less than 60% of missing values across their rows, what corresponds to a few portion of columns with respect to the number of columns in the original dataset, as you will see soon.
+
+```{r}
+usefulCol <- NULL
+for (j in 1:ncol(training))
+{
+    usefulCol[j] <- ifelse(sum(is.na(training[,j])) < 0.6 * nrow(training), TRUE, FALSE)
+}
+
+training <- training[, usefulCol]
+ncol(training)
+```
+
+Therefore, we see that from the 153 variables (after removing the first 7 metadata columns) the number of meaningful columns for the dataset is just `r ncol(training)`, what represents about one third of the size of the original data.
+
+### Eliminate variables with low variability
+
+The next step is to check whether some column shows little variability, since they will not add any meaningful information to the model.
+
+```{r}
+training <- training[, !nearZeroVar(training, saveMetrics = TRUE)$nzv]
+ncol(training)
+```
+
+The result points that the 53 chosen variables are all meaningful in terms of variability for our model.
+
+## Cross validation
+
+As recommended in the Coursera course we split the "original" dataset in 60% for the training set and 40% in the test set to check the accuracy of the model. Of course the "original" dataset is the training dataset provided by the researchers, since the final dataset cannot be used to check the accuracy. Therefore we create an artificial "test" set so as to check the accuracy of the different models that we will build.
+
+```{r, cache = TRUE}
+set.seed(1000)
+inTrain <- createDataPartition(training$classe, p = 0.6, list = FALSE)
+train <- training[inTrain,]
+test <- training[-inTrain,]
+```
+
+# Building prediction models
+
+In this section we are going to build our models with different algorithms till finding one with an acceptable accuracy on our "test" set.
+
+## Decision Tree
+
+```{r}
+modFit1 <- rpart(classe ~ ., data = train, method = "class")
+predFit1 <- predict(modFit1, test, type = "class")
+cm1 <- confusionMatrix(predFit1, factor(test$classe))
+print(cm1)
+```
+
+The outcome of the Decision Tree algorithm yields an accuracy of around 75%, what is not outstanding. Therefore, let us try with another algorithm which is supposed to be more powerful.
+
+## Random Forests
+
+Here we apply the "Random Forests" algorithm to the same sets as created in the cross-validation section.
+
+```{r}
+modFit2 <- randomForest(factor(classe) ~ ., data = train)
+predFit2 <- predict(modFit2, test)
+cm2 <- confusionMatrix(predFit2, factor(test$classe))
+print(cm2)
+```
+
+The accuracy of the "Random Forests" algorithm is very good: around 99.4%. Therefore, we are going to use the model that we have built with this algorithm to predict the outcome of the testing set to answer the project Quiz.
+
+# Prediction outcome
+
+Here we write the code to predict the outcome of the prepared testing dataset so as to answer the project quiz:
+
+```{r}
+predProject <- predict(modFit2, testing)
+predProject
+```
